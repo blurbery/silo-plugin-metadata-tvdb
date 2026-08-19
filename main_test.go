@@ -36,6 +36,27 @@ func TestResolveImageURL(t *testing.T) {
 	}
 }
 
+func TestImageRecordMetadataIncludesArtworkTextSignal(t *testing.T) {
+	includesText := false
+	md := imageRecordMetadata(metadata.RemoteImage{
+		Rating:       8.5,
+		IncludesText: &includesText,
+	})
+	if md == nil {
+		t.Fatal("imageRecordMetadata() = nil")
+	}
+	if got := md.GetFields()["rating"].GetNumberValue(); got != 8.5 {
+		t.Fatalf("rating = %v, want 8.5", got)
+	}
+	includesTextField, ok := md.GetFields()["includes_text"]
+	if !ok {
+		t.Fatal("includes_text metadata is missing")
+	}
+	if includesTextField.GetBoolValue() {
+		t.Fatal("includes_text = true, want false")
+	}
+}
+
 func TestRuntimeServerConfigure_NoOp(t *testing.T) {
 	server := &runtimeServer{provider: provider.NewProvider()}
 
