@@ -289,7 +289,7 @@ type ArtworkRecord struct {
 	Score        int    `json:"score"`
 	Width        int    `json:"width"`
 	Height       int    `json:"height"`
-	IncludesText bool   `json:"includesText"`
+	IncludesText *bool  `json:"includesText"`
 }
 
 // ContentRating is a content/age rating for a given country.

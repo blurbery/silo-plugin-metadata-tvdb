@@ -183,22 +183,24 @@ func TestGetImagesReturnsArtworkImageURLs(t *testing.T) {
 					"name": "Series",
 					"artworks": []map[string]any{
 						{
-							"id":        1,
-							"type":      2,
-							"image":     "https://artworks.example/poster-original.jpg",
-							"thumbnail": "https://artworks.example/poster-thumb.jpg",
-							"width":     2000,
-							"height":    3000,
-							"score":     10,
+							"id":           1,
+							"type":         2,
+							"image":        "https://artworks.example/poster-original.jpg",
+							"thumbnail":    "https://artworks.example/poster-thumb.jpg",
+							"width":        2000,
+							"height":       3000,
+							"score":        10,
+							"includesText": true,
 						},
 						{
-							"id":        2,
-							"type":      3,
-							"image":     "https://artworks.example/background-original.jpg",
-							"thumbnail": "",
-							"width":     3840,
-							"height":    2160,
-							"score":     8,
+							"id":           2,
+							"type":         3,
+							"image":        "https://artworks.example/background-original.jpg",
+							"thumbnail":    "",
+							"width":        3840,
+							"height":       2160,
+							"score":        8,
+							"includesText": false,
 						},
 					},
 				},
@@ -224,16 +226,22 @@ func TestGetImagesReturnsArtworkImageURLs(t *testing.T) {
 		t.Fatalf("len(images) = %d, want 2", len(images))
 	}
 
-	got := map[metadata.ImageType]string{}
+	got := map[metadata.ImageType]metadata.RemoteImage{}
 	for _, img := range images {
-		got[img.Type] = img.URL
+		got[img.Type] = img
 	}
 
-	if got[metadata.ImagePoster] != "https://artworks.example/poster-original.jpg" {
-		t.Fatalf("poster URL = %q", got[metadata.ImagePoster])
+	if got[metadata.ImagePoster].URL != "https://artworks.example/poster-original.jpg" {
+		t.Fatalf("poster URL = %q", got[metadata.ImagePoster].URL)
 	}
-	if got[metadata.ImageBackdrop] != "https://artworks.example/background-original.jpg" {
-		t.Fatalf("backdrop URL = %q", got[metadata.ImageBackdrop])
+	if got[metadata.ImagePoster].IncludesText == nil || !*got[metadata.ImagePoster].IncludesText {
+		t.Fatalf("poster IncludesText = %v, want true", got[metadata.ImagePoster].IncludesText)
+	}
+	if got[metadata.ImageBackdrop].URL != "https://artworks.example/background-original.jpg" {
+		t.Fatalf("backdrop URL = %q", got[metadata.ImageBackdrop].URL)
+	}
+	if got[metadata.ImageBackdrop].IncludesText == nil || *got[metadata.ImageBackdrop].IncludesText {
+		t.Fatalf("backdrop IncludesText = %v, want false", got[metadata.ImageBackdrop].IncludesText)
 	}
 }
 
@@ -260,22 +268,24 @@ func TestGetImagesPrefersTVDBPrimaryPoster(t *testing.T) {
 					"image": "https://artworks.example/poster-primary.jpg",
 					"artworks": []map[string]any{
 						{
-							"id":       1,
-							"type":     2,
-							"image":    "https://artworks.example/poster-primary.jpg",
-							"language": "eng",
-							"width":    2000,
-							"height":   3000,
-							"score":    10,
+							"id":           1,
+							"type":         2,
+							"image":        "https://artworks.example/poster-primary.jpg",
+							"language":     "eng",
+							"width":        2000,
+							"height":       3000,
+							"score":        10,
+							"includesText": true,
 						},
 						{
-							"id":       2,
-							"type":     2,
-							"image":    "https://artworks.example/poster-textless.jpg",
-							"language": "",
-							"width":    2000,
-							"height":   3000,
-							"score":    11,
+							"id":           2,
+							"type":         2,
+							"image":        "https://artworks.example/poster-textless.jpg",
+							"language":     "",
+							"width":        2000,
+							"height":       3000,
+							"score":        11,
+							"includesText": false,
 						},
 					},
 				},
@@ -316,6 +326,12 @@ func TestGetImagesPrefersTVDBPrimaryPoster(t *testing.T) {
 	}
 	if primary.Language != "en" {
 		t.Fatalf("primary language = %q, want en", primary.Language)
+	}
+	if primary.IncludesText == nil || !*primary.IncludesText {
+		t.Fatalf("primary IncludesText = %v, want true", primary.IncludesText)
+	}
+	if textless.IncludesText == nil || *textless.IncludesText {
+		t.Fatalf("textless IncludesText = %v, want false", textless.IncludesText)
 	}
 	if primary.Rating <= textless.Rating {
 		t.Fatalf("primary rating = %v, textless rating = %v; want primary > textless", primary.Rating, textless.Rating)

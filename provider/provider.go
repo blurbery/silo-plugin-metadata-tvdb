@@ -470,12 +470,13 @@ func (p *Provider) GetImages(ctx context.Context, req metadata.ImageRequest) ([]
 			continue
 		}
 		out = append(out, metadata.RemoteImage{
-			URL:      a.Image,
-			Type:     imgType,
-			Language: toLang1(a.Language),
-			Width:    a.Width,
-			Height:   a.Height,
-			Rating:   float64(a.Score),
+			URL:          a.Image,
+			Type:         imgType,
+			Language:     toLang1(a.Language),
+			Width:        a.Width,
+			Height:       a.Height,
+			Rating:       float64(a.Score),
+			IncludesText: a.IncludesText,
 		})
 	}
 	return preferPrimaryImage(out, metadata.ImagePoster, primaryPosterURL, ""), nil
