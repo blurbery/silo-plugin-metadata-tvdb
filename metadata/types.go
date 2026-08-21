@@ -115,6 +115,9 @@ type ImageRequest struct {
 	ProviderIDs map[string]string
 	ContentType string
 	Language    string
+	// SeasonNumber is present only for a season artwork gallery. A pointer is
+	// required because season zero is Specials rather than an unset value.
+	SeasonNumber *int
 }
 
 // RemoteImage describes an available image from a provider.
@@ -126,6 +129,7 @@ type RemoteImage struct {
 	Height       int
 	Rating       float64
 	IncludesText *bool
+	SeasonNumber *int
 }
 
 // ImageType classifies image purpose.

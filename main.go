@@ -250,14 +250,19 @@ func (s *metadataServer) GetImages(ctx context.Context, req *pluginv1.GetImagesR
 		case metadata.ImageLogo:
 			kind = "logo"
 		}
-		response.Images = append(response.Images, &pluginv1.ImageRecord{
+		record := &pluginv1.ImageRecord{
 			Kind:     kind,
 			Url:      tvdbCanonicalPath(img.URL),
 			Language: img.Language,
 			Width:    int32(img.Width),
 			Height:   int32(img.Height),
 			Metadata: imageRecordMetadata(img),
-		})
+		}
+		if img.SeasonNumber != nil {
+			seasonNumber := int32(*img.SeasonNumber)
+			record.SeasonNumber = &seasonNumber
+		}
+		response.Images = append(response.Images, record)
 	}
 	return response, nil
 }
@@ -486,11 +491,16 @@ func episodesRequestFromProto(req *pluginv1.GetEpisodesRequest, capabilityID str
 }
 
 func imageRequestFromProto(req *pluginv1.GetImagesRequest, capabilityID string) metadata.ImageRequest {
-	return metadata.ImageRequest{
+	result := metadata.ImageRequest{
 		ProviderIDs: providerIDsFromProto(req.GetProviderIds(), capabilityID, req.GetProviderId()),
 		ContentType: req.GetItemType(),
 		Language:    req.GetLanguage(),
 	}
+	if req.SeasonNumber != nil {
+		seasonNumber := int(req.GetSeasonNumber())
+		result.SeasonNumber = &seasonNumber
+	}
+	return result
 }
 
 func stringStruct(value map[string]string) (*structpb.Struct, error) {

@@ -3,7 +3,7 @@ module github.com/Silo-Server/silo-plugin-tvdb
 go 1.26.3
 
 require (
-	github.com/Silo-Server/silo-plugin-sdk v0.12.0
+	github.com/Silo-Server/silo-plugin-sdk v0.13.2
 	golang.org/x/sync v0.20.0
 	golang.org/x/time v0.14.0
 	google.golang.org/protobuf v1.36.11
@@ -21,6 +21,8 @@ require (
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
-	google.golang.org/grpc v1.79.3 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 )
+
+replace github.com/Silo-Server/silo-plugin-sdk => github.com/blurbery/silo-plugin-sdk v0.0.0-20260821083148-613a06988a50

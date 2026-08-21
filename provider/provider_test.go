@@ -245,6 +245,80 @@ func TestGetImagesReturnsArtworkImageURLs(t *testing.T) {
 	}
 }
 
+func TestGetImagesReturnsExactSeasonGallery(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data":   map[string]any{"token": "test-token"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/series/99/extended":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"id": 99,
+					"artworks": []map[string]any{{
+						"type": 2, "image": "https://artworks.example/show-poster.jpg",
+					}},
+					"seasons": []map[string]any{
+						{"id": 700, "number": 0, "type": map[string]any{"id": 1, "name": "Official"}},
+						{"id": 701, "number": 1, "type": map[string]any{"id": 1, "name": "Official"}},
+						{"id": 799, "number": 0, "type": map[string]any{"id": 2, "name": "DVD"}},
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/seasons/700/extended":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"id":     700,
+					"number": 0,
+					"image":  "https://artworks.example/specials-primary.jpg",
+					"artwork": []map[string]any{
+						{"id": 1, "type": 7, "image": "https://artworks.example/specials-one.jpg", "language": "eng", "score": 9, "width": 2000, "height": 3000},
+						{"id": 2, "type": 14, "image": "https://artworks.example/specials-two.jpg", "language": "fra", "score": 8, "width": 2000, "height": 3000},
+						{"id": 3, "type": 3, "image": "https://artworks.example/specials-landscape.jpg", "score": 10, "width": 3840, "height": 2160},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(1000)
+	client.SetBaseURL(server.URL)
+	specials := 0
+	images, err := NewProviderWithClient(client).GetImages(context.Background(), metadata.ImageRequest{
+		ProviderIDs:  map[string]string{"tvdb": "99"},
+		ContentType:  "series",
+		SeasonNumber: &specials,
+	})
+	if err != nil {
+		t.Fatalf("GetImages() error = %v", err)
+	}
+	if len(images) != 3 {
+		t.Fatalf("images = %#v, want two season artworks plus primary", images)
+	}
+	for _, image := range images {
+		if image.Type != metadata.ImagePoster {
+			t.Fatalf("image type = %v, want season poster", image.Type)
+		}
+		if image.SeasonNumber == nil || *image.SeasonNumber != 0 {
+			t.Fatalf("image SeasonNumber = %v, want present Specials value 0", image.SeasonNumber)
+		}
+		if strings.Contains(image.URL, "show-poster") {
+			t.Fatalf("show poster leaked into exact season gallery: %#v", image)
+		}
+	}
+}
+
 func TestGetImagesPrefersTVDBPrimaryPoster(t *testing.T) {
 	t.Parallel()
 
