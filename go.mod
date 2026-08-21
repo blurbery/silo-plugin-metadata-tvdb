@@ -25,4 +25,4 @@ require (
 	google.golang.org/grpc v1.82.1 // indirect
 )
 
-replace github.com/Silo-Server/silo-plugin-sdk => github.com/blurbery/silo-plugin-sdk v0.0.0-20260821083148-613a06988a50
+replace github.com/Silo-Server/silo-plugin-sdk => github.com/blurbery/silo-plugin-sdk v0.0.0-20260821084713-0029dbbc36be
