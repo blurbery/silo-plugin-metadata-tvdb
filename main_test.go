@@ -57,6 +57,25 @@ func TestImageRecordMetadataIncludesArtworkTextSignal(t *testing.T) {
 	}
 }
 
+func TestImageRequestFromProtoPreservesSpecialsPresence(t *testing.T) {
+	specials := int32(0)
+	got := imageRequestFromProto(&pluginv1.GetImagesRequest{
+		ProviderId:   "99",
+		ItemType:     "series",
+		Language:     "fr",
+		SeasonNumber: &specials,
+	}, "tvdb")
+	if got.SeasonNumber == nil || *got.SeasonNumber != 0 {
+		t.Fatalf("SeasonNumber = %v, want present Specials value 0", got.SeasonNumber)
+	}
+	if got.ProviderIDs["tvdb"] != "99" || got.ContentType != "series" || got.Language != "fr" {
+		t.Fatalf("image request = %#v", got)
+	}
+	if absent := imageRequestFromProto(&pluginv1.GetImagesRequest{}, "tvdb"); absent.SeasonNumber != nil {
+		t.Fatalf("absent season number mapped as %v", absent.SeasonNumber)
+	}
+}
+
 func TestRuntimeServerConfigure_NoOp(t *testing.T) {
 	server := &runtimeServer{provider: provider.NewProvider()}
 

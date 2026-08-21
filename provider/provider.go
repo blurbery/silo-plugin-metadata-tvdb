@@ -446,6 +446,7 @@ func (p *Provider) GetImages(ctx context.Context, req metadata.ImageRequest) ([]
 
 	var artworks []ArtworkRecord
 	primaryPosterURL := ""
+	seasonGallery := false
 	switch req.ContentType {
 	case "movie":
 		movie, err := p.client.GetMovieExtended(ctx, id)
@@ -459,15 +460,43 @@ func (p *Provider) GetImages(ctx context.Context, req metadata.ImageRequest) ([]
 		if err != nil {
 			return nil, err
 		}
-		artworks = series.Artworks
-		primaryPosterURL = series.Image
+		if req.SeasonNumber == nil {
+			artworks = series.Artworks
+			primaryPosterURL = series.Image
+			break
+		}
+
+		var seasonID int
+		for _, season := range series.Seasons {
+			if season.Type.ID == 1 && season.Number == *req.SeasonNumber {
+				seasonID = season.ID
+				break
+			}
+		}
+		if seasonID == 0 {
+			return nil, nil
+		}
+		season, err := p.client.GetSeasonExtended(ctx, seasonID)
+		if err != nil {
+			return nil, err
+		}
+		artworks = season.Artwork
+		primaryPosterURL = season.Image
+		seasonGallery = true
 	}
 
 	var out []metadata.RemoteImage
 	for _, a := range artworks {
-		imgType, ok := artworkTypeToImageType(a.Type)
-		if !ok {
+		if seasonGallery && a.Width > 0 && a.Height > 0 && a.Height <= a.Width {
 			continue
+		}
+		imgType := metadata.ImagePoster
+		if !seasonGallery {
+			var ok bool
+			imgType, ok = artworkTypeToImageType(a.Type)
+			if !ok {
+				continue
+			}
 		}
 		out = append(out, metadata.RemoteImage{
 			URL:          a.Image,
@@ -479,7 +508,13 @@ func (p *Provider) GetImages(ctx context.Context, req metadata.ImageRequest) ([]
 			IncludesText: a.IncludesText,
 		})
 	}
-	return preferPrimaryImage(out, metadata.ImagePoster, primaryPosterURL, ""), nil
+	out = preferPrimaryImage(out, metadata.ImagePoster, primaryPosterURL, "")
+	if seasonGallery && req.SeasonNumber != nil {
+		for i := range out {
+			out[i].SeasonNumber = req.SeasonNumber
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
