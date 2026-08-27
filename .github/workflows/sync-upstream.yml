@@ -1,0 +1,106 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "27 4,16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: Silo-Server/silo-plugin-metadata-tvdb
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    name: Merge, validate, and update main
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the fork main branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream on a temporary branch
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "blurbery"
+          git config user.email "271863866+blurbery@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Fork main already contains the latest upstream commit."
+            exit 0
+          fi
+
+          git switch -c "automation/upstream-sync-${GITHUB_RUN_ID}"
+          git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the scheduled workflow active
+        if: steps.merge.outputs.changed == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          last_commit_epoch="$(git log -1 --format=%ct)"
+          current_epoch="$(date +%s)"
+          keepalive_after_seconds=$((45 * 24 * 60 * 60))
+          if (( current_epoch - last_commit_epoch < keepalive_after_seconds )); then
+            echo "Repository activity is recent; no keepalive commit is needed."
+            exit 0
+          fi
+          git commit --allow-empty -m "chore: keep upstream sync active"
+          git push origin HEAD:main
+
+      - name: Set up Go
+        if: steps.merge.outputs.changed == 'true'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26"
+
+      - name: Configure module resolution
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          go env -w GOPROXY=direct
+          go env -w GOPRIVATE=github.com/Silo-Server/*
+          go env -w GONOSUMDB=github.com/Silo-Server/*
+
+      - name: Reject committed local SDK replaces
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          if grep -Eq '^replace github.com/Silo-Server/silo-plugin-sdk => /' go.mod; then
+            echo "go.mod contains a machine-local silo-plugin-sdk replace."
+            exit 1
+          fi
+
+      - name: Run tests
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GOWORK: off
+        run: go test ./...
+
+      - name: Advance fork main after validation
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:main
+
+      - name: Summarize a failed sync
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "## Upstream sync failed"
+            echo
+            echo "The fork's main branch was left unchanged. Review the failed step in this run."
+          } >> "$GITHUB_STEP_SUMMARY"
