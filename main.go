@@ -268,18 +268,14 @@ func (s *metadataServer) GetImages(ctx context.Context, req *pluginv1.GetImagesR
 }
 
 func imageRecordMetadata(img metadata.RemoteImage) *structpb.Struct {
-	fields := make(map[string]interface{}, 2)
+	fields := make(map[string]any, 2)
 	if img.Rating > 0 {
 		fields["rating"] = img.Rating
 	}
 	if img.IncludesText != nil {
 		fields["includes_text"] = *img.IncludesText
 	}
-	if len(fields) == 0 {
-		return nil
-	}
-	result, _ := structpb.NewStruct(fields)
-	return result
+	return structFromMap(fields)
 }
 
 func (s *metadataServer) ResolveImageURL(_ context.Context, req *pluginv1.ResolveImageURLRequest) (*pluginv1.ResolveImageURLResponse, error) {

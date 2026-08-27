@@ -27,12 +27,18 @@ const (
 	// whole series, so a short TTL lets every season of one series' refresh pass
 	// share a single fetch while keeping the data fresh.
 	episodesCacheTTL = 5 * time.Minute
+	// seriesExtendedCacheTTL bounds how long an extended series record is reused.
+	// The server requests one season gallery at a time, but every gallery needs
+	// the same season index, so a short TTL lets one series refresh share a single
+	// extended-series fetch while keeping the data fresh.
+	seriesExtendedCacheTTL = 5 * time.Minute
 	// maxEpisodePages caps pagination of the bulk episodes endpoint (500/page)
 	// so a malformed paging response cannot spin forever.
 	maxEpisodePages = 100
 	// episodesCacheMaxEntries triggers an opportunistic purge of expired entries
 	// so the cache cannot grow without bound during a long refresh run.
-	episodesCacheMaxEntries = 512
+	episodesCacheMaxEntries       = 512
+	seriesExtendedCacheMaxEntries = 512
 )
 
 // Client is an HTTP client for the TVDB v4 API.
@@ -47,6 +53,9 @@ type Client struct {
 
 	episodesCacheMu sync.Mutex
 	episodesCache   map[string]episodesCacheEntry
+
+	seriesExtendedCacheMu sync.Mutex
+	seriesExtendedCache   map[int]seriesExtendedCacheEntry
 }
 
 // seriesEpisodes is the assembled (all-pages) result of the bulk episodes
@@ -61,6 +70,11 @@ type episodesCacheEntry struct {
 	fetchedAt time.Time
 }
 
+type seriesExtendedCacheEntry struct {
+	data      *SeriesExtendedRecord
+	fetchedAt time.Time
+}
+
 // NewClient creates a TVDB API client with the given rate limit (requests per
 // second). It uses the built-in project API key.
 func NewClient(rateLimit int) *Client {
@@ -68,11 +82,12 @@ func NewClient(rateLimit int) *Client {
 		rateLimit = 50
 	}
 	return &Client{
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
-		apiKey:        defaultAPIKey,
-		baseURL:       defaultBaseURL,
-		limiter:       rate.NewLimiter(rate.Limit(rateLimit), rateLimit),
-		episodesCache: make(map[string]episodesCacheEntry),
+		httpClient:          &http.Client{Timeout: 30 * time.Second},
+		apiKey:              defaultAPIKey,
+		baseURL:             defaultBaseURL,
+		limiter:             rate.NewLimiter(rate.Limit(rateLimit), rateLimit),
+		episodesCache:       make(map[string]episodesCacheEntry),
+		seriesExtendedCache: make(map[int]seriesExtendedCacheEntry),
 	}
 }
 
@@ -324,12 +339,40 @@ func (c *Client) GetPersonExtended(ctx context.Context, id int) (*PeopleExtended
 // GetSeriesExtended fetches the extended record for a series, including
 // translations (needed to resolve preferred-language titles and overviews).
 func (c *Client) GetSeriesExtended(ctx context.Context, id int) (*SeriesExtendedRecord, error) {
+	if cached, ok := c.lookupSeriesExtendedCache(id); ok {
+		return cached, nil
+	}
+
 	path := fmt.Sprintf("/series/%d/extended?meta=translations", id)
 	var resp apiResponse[SeriesExtendedRecord]
 	if err := c.doGet(ctx, path, &resp); err != nil {
 		return nil, err
 	}
+	c.storeSeriesExtendedCache(id, &resp.Data)
 	return &resp.Data, nil
+}
+
+func (c *Client) lookupSeriesExtendedCache(id int) (*SeriesExtendedRecord, bool) {
+	c.seriesExtendedCacheMu.Lock()
+	defer c.seriesExtendedCacheMu.Unlock()
+	entry, ok := c.seriesExtendedCache[id]
+	if !ok || time.Since(entry.fetchedAt) > seriesExtendedCacheTTL {
+		return nil, false
+	}
+	return entry.data, true
+}
+
+func (c *Client) storeSeriesExtendedCache(id int, data *SeriesExtendedRecord) {
+	c.seriesExtendedCacheMu.Lock()
+	defer c.seriesExtendedCacheMu.Unlock()
+	if len(c.seriesExtendedCache) >= seriesExtendedCacheMaxEntries {
+		for cachedID, entry := range c.seriesExtendedCache {
+			if time.Since(entry.fetchedAt) > seriesExtendedCacheTTL {
+				delete(c.seriesExtendedCache, cachedID)
+			}
+		}
+	}
+	c.seriesExtendedCache[id] = seriesExtendedCacheEntry{data: data, fetchedAt: time.Now()}
 }
 
 // GetMovieExtended fetches the extended record for a movie, including

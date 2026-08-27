@@ -128,8 +128,8 @@ type RemoteImage struct {
 	Width        int
 	Height       int
 	Rating       float64
-	IncludesText *bool
 	SeasonNumber *int
+	IncludesText *bool // nil when the provider does not report text presence
 }
 
 // ImageType classifies image purpose.
