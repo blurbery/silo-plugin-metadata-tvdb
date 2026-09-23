@@ -38,6 +38,12 @@ func NewProviderWithClient(c *Client) *Provider {
 	return &Provider{client: c}
 }
 
+// SetMetadataProxyURL routes provider requests through a Silo metadata proxy,
+// or restores direct TVDB access when the URL is empty.
+func (p *Provider) SetMetadataProxyURL(proxyURL string) error {
+	return p.client.SetProxyURL(proxyURL)
+}
+
 func (p *Provider) Slug() string       { return "tvdb" }
 func (p *Provider) Name() string       { return "TheTVDB" }
 func (p *Provider) ForTypes() []string { return []string{"movie", "series"} }
@@ -519,10 +525,7 @@ func (p *Provider) seasonGalleryImages(ctx context.Context, seriesID, seasonNumb
 		if isPrimary {
 			primaryInArtwork = true
 		}
-		if artwork.Type != seasonPosterArtworkTypeID {
-			continue
-		}
-		if artwork.Width > 0 && artwork.Height > 0 && artwork.Height <= artwork.Width {
+		if !isSeasonPoster(artwork) {
 			continue
 		}
 		if isPrimary {
@@ -575,11 +578,18 @@ func (p *Provider) GetSeasons(ctx context.Context, req metadata.SeasonsRequest) 
 		}
 	}
 
+	artworkBySeason := make(map[int][]ArtworkRecord)
+	for _, artwork := range series.Artworks {
+		if artwork.SeasonID != 0 {
+			artworkBySeason[artwork.SeasonID] = append(artworkBySeason[artwork.SeasonID], artwork)
+		}
+	}
+
 	seasons := make([]metadata.SeasonResult, len(officialSeasons))
 	for i, s := range officialSeasons {
 		seasons[i] = metadata.SeasonResult{
 			SeasonNumber: s.Number,
-			PosterPath:   s.Image,
+			PosterPath:   seasonPosterPath(artworkBySeason[s.ID], s.Image, req.Language),
 		}
 	}
 
@@ -893,6 +903,76 @@ func artworkTypeToImageType(artType int) (metadata.ImageType, bool) {
 
 func isOfficialSeason(season SeasonBaseRecord) bool {
 	return season.Type.ID == officialSeasonTypeID
+}
+
+// isSeasonPoster rejects season artwork that is not portrait poster art.
+func isSeasonPoster(artwork ArtworkRecord) bool {
+	if artwork.Type != seasonPosterArtworkTypeID {
+		return false
+	}
+	return artwork.Width <= 0 || artwork.Height <= 0 || artwork.Height > artwork.Width
+}
+
+// Season poster tiers follow the host's series poster order: the requested
+// language, English, any other poster with text, then textless art.
+const (
+	seasonPosterRequestedLanguage = iota
+	seasonPosterEnglish
+	seasonPosterOtherText
+	seasonPosterTextless
+)
+
+func seasonPosterTier(artwork ArtworkRecord, language string) int {
+	hasText := strings.TrimSpace(artwork.Language) != ""
+	if artwork.IncludesText != nil {
+		hasText = *artwork.IncludesText
+	}
+	switch {
+	case !hasText:
+		return seasonPosterTextless
+	case languageMatches(language, artwork.Language):
+		return seasonPosterRequestedLanguage
+	case languageMatches("en", artwork.Language):
+		return seasonPosterEnglish
+	default:
+		return seasonPosterOtherText
+	}
+}
+
+// seasonPosterPath picks a season's poster from its artwork. TVDB sometimes
+// marks a low-scored poster in an unrelated language, or a banner, as the
+// season's primary image, so the primary wins only within its language tier;
+// otherwise the highest-scored poster in the best tier wins. A primary missing
+// from the artwork list is usually a background, so it is used only when the
+// season has no poster; a listed primary that is not a poster is never used.
+func seasonPosterPath(artworks []ArtworkRecord, primaryURL, language string) string {
+	primaryURL = strings.TrimSpace(primaryURL)
+	bestURL, bestTier, bestScore := "", 0, 0
+	consider := func(url string, tier, score int) {
+		if bestURL != "" {
+			if tier > bestTier {
+				return
+			}
+			if tier == bestTier && (bestURL == primaryURL || (url != primaryURL && score <= bestScore)) {
+				return
+			}
+		}
+		bestURL, bestTier, bestScore = url, tier, score
+	}
+
+	primaryListed := false
+	for _, artwork := range artworks {
+		if artwork.Image == primaryURL {
+			primaryListed = true
+		}
+		if artwork.Image != "" && isSeasonPoster(artwork) {
+			consider(artwork.Image, seasonPosterTier(artwork, language), artwork.Score)
+		}
+	}
+	if bestURL == "" && !primaryListed {
+		return primaryURL
+	}
+	return bestURL
 }
 
 // ensurePrimaryImage can either boost a canonical primary above all provider

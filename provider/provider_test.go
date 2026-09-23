@@ -473,6 +473,211 @@ func TestSeriesExtendedCacheSharedBySeasonsAndGallery(t *testing.T) {
 	}
 }
 
+func TestGetSeasonsPicksPosterInRequestedLanguage(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success", "data": map[string]any{"token": "test-token"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/series/99/extended":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"id": 99, "originalLanguage": "eng",
+					"seasons": []map[string]any{
+						{"id": 701, "number": 1, "image": "https://artworks.example/s1-hun.jpg", "type": map[string]any{"id": 1}},
+						{"id": 702, "number": 2, "image": "https://artworks.example/s2-primary.jpg", "type": map[string]any{"id": 1}},
+						{"id": 703, "number": 3, "image": "https://artworks.example/s3.jpg", "type": map[string]any{"id": 1}},
+					},
+					"artworks": []map[string]any{
+						{"id": 1, "type": 7, "seasonId": 701, "image": "https://artworks.example/s1-hun.jpg", "language": "hun", "score": 1, "includesText": true, "width": 400, "height": 578},
+						{"id": 2, "type": 7, "seasonId": 701, "image": "https://artworks.example/s1-eng-low.jpg", "language": "eng", "score": 5, "width": 400, "height": 578},
+						{"id": 3, "type": 7, "seasonId": 701, "image": "https://artworks.example/s1-eng.jpg", "language": "eng", "score": 100000, "includesText": true, "width": 400, "height": 578},
+						{"id": 4, "type": 7, "seasonId": 702, "image": "https://artworks.example/s2-primary.jpg", "language": "eng", "score": 10, "width": 400, "height": 578},
+						{"id": 5, "type": 7, "seasonId": 702, "image": "https://artworks.example/s2-eng.jpg", "language": "eng", "score": 100000, "width": 400, "height": 578},
+						{"id": 7, "type": 6, "seasonId": 703, "image": "https://artworks.example/s3-banner.jpg", "language": "eng", "score": 100000, "width": 758, "height": 140},
+						{"id": 6, "type": 2, "image": "https://artworks.example/series-poster.jpg", "language": "eng", "score": 100000, "width": 680, "height": 1000},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(1000)
+	client.SetBaseURL(server.URL)
+	seasons, err := NewProviderWithClient(client).GetSeasons(context.Background(), metadata.SeasonsRequest{
+		ProviderIDs: map[string]string{"tvdb": "99"}, Language: "en",
+	})
+	if err != nil {
+		t.Fatalf("GetSeasons() error = %v", err)
+	}
+
+	want := map[int]string{
+		1: "https://artworks.example/s1-eng.jpg",
+		2: "https://artworks.example/s2-primary.jpg",
+		3: "https://artworks.example/s3.jpg",
+	}
+	if len(seasons) != len(want) {
+		t.Fatalf("seasons = %#v, want %d seasons", seasons, len(want))
+	}
+	for _, season := range seasons {
+		if season.PosterPath != want[season.SeasonNumber] {
+			t.Errorf("season %d poster = %q, want %q", season.SeasonNumber, season.PosterPath, want[season.SeasonNumber])
+		}
+	}
+}
+
+func TestSeasonPosterPath(t *testing.T) {
+	t.Parallel()
+
+	textless, hasText := false, true
+	poster := func(url, language string, score int) ArtworkRecord {
+		return ArtworkRecord{Type: seasonPosterArtworkTypeID, Image: url, Language: language, Score: score, Width: 400, Height: 578}
+	}
+	textlessPoster := func(url, language string, score int) ArtworkRecord {
+		artwork := poster(url, language, score)
+		artwork.IncludesText = &textless
+		return artwork
+	}
+	landscape := poster("wide", "eng", 100000)
+	landscape.Width, landscape.Height = 1000, 562
+
+	tests := []struct {
+		name     string
+		artworks []ArtworkRecord
+		primary  string
+		language string
+		want     string
+	}{
+		{
+			name:     "requested language beats English",
+			artworks: []ArtworkRecord{poster("en", "eng", 100000), poster("de", "deu", 0)},
+			primary:  "en",
+			language: "de-DE",
+			want:     "de",
+		},
+		{
+			name:     "English is the fallback language",
+			artworks: []ArtworkRecord{poster("hu", "hun", 100000), poster("en", "eng", 0)},
+			primary:  "hu",
+			language: "fr",
+			want:     "en",
+		},
+		{
+			name:     "no requested language prefers English",
+			artworks: []ArtworkRecord{poster("ru", "rus", 100000), poster("en", "eng", 0)},
+			primary:  "ru",
+			want:     "en",
+		},
+		{
+			name:     "primary wins within its tier",
+			artworks: []ArtworkRecord{poster("en-top", "eng", 100000), poster("en-primary", "eng", 1)},
+			primary:  "en-primary",
+			language: "en",
+			want:     "en-primary",
+		},
+		{
+			name:     "highest score wins within a tier",
+			artworks: []ArtworkRecord{poster("de-low", "deu", 1), poster("de-high", "deu", 9), poster("de-mid", "deu", 5)},
+			language: "de",
+			want:     "de-high",
+		},
+		{
+			name:     "equal scores keep API order",
+			artworks: []ArtworkRecord{poster("first", "eng", 7), poster("second", "eng", 7)},
+			language: "en",
+			want:     "first",
+		},
+		{
+			name:     "other text beats textless art",
+			artworks: []ArtworkRecord{textlessPoster("clean", "eng", 100000), poster("ja", "jpn", 0)},
+			primary:  "clean",
+			language: "en",
+			want:     "ja",
+		},
+		{
+			name:     "untagged art is textless",
+			artworks: []ArtworkRecord{poster("untagged", "", 100000), poster("es", "spa", 0)},
+			language: "en",
+			want:     "es",
+		},
+		{
+			name:     "textless art is used when nothing has text",
+			artworks: []ArtworkRecord{textlessPoster("clean-low", "", 1), textlessPoster("clean-high", "", 2)},
+			language: "en",
+			want:     "clean-high",
+		},
+		{
+			name:     "requested language as a three-letter code",
+			artworks: []ArtworkRecord{poster("en", "eng", 100000), poster("de", "deu", 0)},
+			language: "deu",
+			want:     "de",
+		},
+		{
+			name: "text flag without a language ranks as other text",
+			artworks: []ArtworkRecord{
+				textlessPoster("clean", "eng", 100000),
+				{Type: seasonPosterArtworkTypeID, Image: "untagged-text", Score: 1, IncludesText: &hasText},
+			},
+			language: "en",
+			want:     "untagged-text",
+		},
+		{
+			name:     "any season poster beats an unlisted primary",
+			artworks: []ArtworkRecord{poster("de", "deu", 0)},
+			primary:  "unlisted",
+			language: "en",
+			want:     "de",
+		},
+		{
+			name:    "unlisted primary is kept when the season has no poster",
+			primary: "unlisted",
+			want:    "unlisted",
+		},
+		{
+			name:     "landscape art is skipped",
+			artworks: []ArtworkRecord{landscape, poster("de", "deu", 0)},
+			primary:  "wide",
+			language: "en",
+			want:     "de",
+		},
+		{
+			name: "banner primary is skipped",
+			artworks: []ArtworkRecord{
+				{Type: 6, Image: "banner", Language: "eng", Score: 100000, Width: 758, Height: 140},
+				poster("de", "deu", 0),
+			},
+			primary:  "banner",
+			language: "en",
+			want:     "de",
+		},
+		{
+			name: "banner primary is not used as a poster",
+			artworks: []ArtworkRecord{
+				{Type: 6, Image: "banner", Language: "eng", Score: 100000, Width: 758, Height: 140},
+			},
+			primary:  "banner",
+			language: "en",
+			want:     "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := seasonPosterPath(tt.artworks, tt.primary, tt.language); got != tt.want {
+				t.Fatalf("seasonPosterPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnsurePrimaryImagePreservesProviderScores(t *testing.T) {
 	t.Parallel()
 

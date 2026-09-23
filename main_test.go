@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
 	"github.com/Silo-Server/silo-plugin-tvdb/metadata"
 	"github.com/Silo-Server/silo-plugin-tvdb/provider"
@@ -90,6 +92,48 @@ func TestRuntimeServerConfigure_NoOp(t *testing.T) {
 	}
 	if p == nil {
 		t.Fatal("expected provider to be available")
+	}
+}
+
+func metadataProxyEntry(t *testing.T, values map[string]any) *pluginv1.ConfigEntry {
+	t.Helper()
+	value, err := structpb.NewStruct(values)
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+	return &pluginv1.ConfigEntry{Key: "metadata_proxy", Value: value}
+}
+
+func TestMetadataProxyURLFromConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []*pluginv1.ConfigEntry
+		want    string
+	}{
+		{"no config", nil, ""},
+		{"enabled with url", []*pluginv1.ConfigEntry{metadataProxyEntry(t, map[string]any{"enabled": true, "url": " https://proxy.example/ "})}, "https://proxy.example/"},
+		{"enabled without url", []*pluginv1.ConfigEntry{metadataProxyEntry(t, map[string]any{"enabled": true})}, defaultMetadataProxyURL},
+		{"enabled with blank url", []*pluginv1.ConfigEntry{metadataProxyEntry(t, map[string]any{"enabled": true, "url": "  "})}, defaultMetadataProxyURL},
+		{"disabled", []*pluginv1.ConfigEntry{metadataProxyEntry(t, map[string]any{"enabled": false, "url": "https://proxy.example"})}, ""},
+		{"other keys ignored", []*pluginv1.ConfigEntry{nil, {Key: "something_else"}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := metadataProxyURLFromConfig(tt.entries); got != tt.want {
+				t.Fatalf("metadataProxyURLFromConfig() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeServerConfigure_RejectsInvalidProxyURL(t *testing.T) {
+	server := &runtimeServer{provider: provider.NewProvider()}
+
+	_, err := server.Configure(context.Background(), &pluginv1.ConfigureRequest{
+		Config: []*pluginv1.ConfigEntry{metadataProxyEntry(t, map[string]any{"enabled": true, "url": "metadata.siloserver.org"})},
+	})
+	if err == nil {
+		t.Fatal("Configure() accepted a proxy URL without a scheme")
 	}
 }
 

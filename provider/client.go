@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,15 +43,35 @@ const (
 	seriesExtendedCacheMaxEntries = 512
 )
 
+// proxyPathPrefix is where the Silo metadata proxy mounts the TVDB v4 surface.
+const proxyPathPrefix = "/v1/tvdb/4"
+
+const (
+	// proxyRetryJitter caps the random delay added after a proxy's Retry-After
+	// so that clients told to wait the same time do not all retry at once.
+	proxyRetryJitter = 250 * time.Millisecond
+	// maxProxyRetryAfter caps a single Retry-After wait so that a malformed or
+	// absurd header cannot park a request indefinitely.
+	maxProxyRetryAfter = time.Hour
+	// defaultProxyBackpressureBudget caps the total time one request spends
+	// waiting on proxy backpressure, including when the caller set no deadline.
+	defaultProxyBackpressureBudget = 10 * time.Minute
+)
+
 // Client is an HTTP client for the TVDB v4 API.
 type Client struct {
-	httpClient *http.Client
-	apiKey     string
-	baseURL    string
-	token      string       // Bearer token from /login
-	tokenMu    sync.RWMutex // protects token read/write
-	refreshMu  sync.Mutex   // serialises re-auth attempts
-	limiter    *rate.Limiter
+	httpClient  *http.Client
+	apiKey      string
+	baseURL     string
+	proxyMode   bool         // when true, baseURL is a Silo metadata proxy
+	transportMu sync.RWMutex // protects baseURL and proxyMode
+	token       string       // Bearer token from /login
+	tokenMu     sync.RWMutex // protects token read/write
+	refreshMu   sync.Mutex   // serialises re-auth attempts
+	limiter     *rate.Limiter
+	// proxyBackpressureBudget is the most one request waits on proxy
+	// Retry-After responses in total.
+	proxyBackpressureBudget time.Duration
 
 	episodesCacheMu sync.Mutex
 	episodesCache   map[string]episodesCacheEntry
@@ -82,18 +104,80 @@ func NewClient(rateLimit int) *Client {
 		rateLimit = 50
 	}
 	return &Client{
-		httpClient:          &http.Client{Timeout: 30 * time.Second},
-		apiKey:              defaultAPIKey,
-		baseURL:             defaultBaseURL,
-		limiter:             rate.NewLimiter(rate.Limit(rateLimit), rateLimit),
-		episodesCache:       make(map[string]episodesCacheEntry),
-		seriesExtendedCache: make(map[int]seriesExtendedCacheEntry),
+		httpClient:              &http.Client{Timeout: 30 * time.Second},
+		apiKey:                  defaultAPIKey,
+		baseURL:                 defaultBaseURL,
+		limiter:                 rate.NewLimiter(rate.Limit(rateLimit), rateLimit),
+		proxyBackpressureBudget: defaultProxyBackpressureBudget,
+		episodesCache:           make(map[string]episodesCacheEntry),
+		seriesExtendedCache:     make(map[int]seriesExtendedCacheEntry),
 	}
 }
 
 // SetBaseURL overrides the API base URL. Used for testing.
 func (c *Client) SetBaseURL(url string) {
-	c.baseURL = url
+	c.setTransport(url, false)
+}
+
+// SetProxyURL routes every request through a Silo metadata proxy at the given
+// base URL (for example https://metadata.siloserver.org). The proxy answers
+// /login itself and serves TVDB's own JSON, so the login flow and response
+// handling are unchanged. An empty URL restores direct TVDB access. Safe to
+// call while requests are in flight.
+func (c *Client) SetProxyURL(proxyURL string) error {
+	proxyURL = strings.TrimRight(strings.TrimSpace(proxyURL), "/")
+	if proxyURL == "" {
+		c.setTransport(defaultBaseURL, false)
+		return nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("tvdb: invalid metadata proxy URL %q", proxyURL)
+	}
+	c.setTransport(proxyURL+proxyPathPrefix, true)
+	return nil
+}
+
+// ProxyMode reports whether requests are routed through a Silo metadata proxy.
+func (c *Client) ProxyMode() bool {
+	c.transportMu.RLock()
+	defer c.transportMu.RUnlock()
+	return c.proxyMode
+}
+
+// transport returns the current base URL and whether it is a metadata proxy.
+func (c *Client) transport() (string, bool) {
+	c.transportMu.RLock()
+	defer c.transportMu.RUnlock()
+	return c.baseURL, c.proxyMode
+}
+
+// setTransport switches the upstream the client talks to. When the upstream
+// changes, the bearer token and the in-memory memo caches are dropped so that
+// nothing issued by, or fetched from, the previous upstream is reused. A
+// request already in flight may still store its result afterwards; that is
+// harmless because both upstreams serve the same TVDB data, and a stale token
+// is replaced by the normal 401 refresh.
+func (c *Client) setTransport(baseURL string, proxyMode bool) {
+	c.transportMu.Lock()
+	defer c.transportMu.Unlock()
+	if c.baseURL == baseURL && c.proxyMode == proxyMode {
+		return
+	}
+	c.baseURL = baseURL
+	c.proxyMode = proxyMode
+
+	c.tokenMu.Lock()
+	c.token = ""
+	c.tokenMu.Unlock()
+
+	c.episodesCacheMu.Lock()
+	clear(c.episodesCache)
+	c.episodesCacheMu.Unlock()
+
+	c.seriesExtendedCacheMu.Lock()
+	clear(c.seriesExtendedCache)
+	c.seriesExtendedCacheMu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +190,8 @@ func (c *Client) authenticate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("tvdb: marshal login body: %w", err)
 	}
-	reqURL := c.baseURL + "/login"
+	baseURL, _ := c.transport()
+	reqURL := baseURL + "/login"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
@@ -184,18 +269,24 @@ func (c *Client) getToken() string {
 // doGet executes a GET request against the TVDB API with rate limiting,
 // Bearer token auth, automatic 401 refresh, and JSON decoding into dest.
 func (c *Client) doGet(ctx context.Context, path string, dest any) error {
-	if err := c.ensureToken(ctx); err != nil {
-		return err
-	}
-
-	if err := c.limiter.Wait(ctx); err != nil {
-		return err
-	}
-
-	reqURL := c.baseURL + path
 	authRetries := 0
+	var backpressure time.Duration
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Read the transport and its token afresh on every attempt: switching
+		// proxy settings clears the token, and a retry must go to the upstream
+		// that the next login authenticates against.
+		if err := c.ensureToken(ctx); err != nil {
+			return err
+		}
+		baseURL, proxyMode := c.transport()
+		reqURL := baseURL + path
+
+		// Every HTTP attempt, retries included, goes through the rate limiter.
+		if err := c.limiter.Wait(ctx); err != nil {
+			return err
+		}
+
 		tok := c.getToken()
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -222,6 +313,38 @@ func (c *Client) doGet(ctx context.Context, path string, dest any) error {
 			}
 			attempt--
 			continue
+		}
+
+		// The Silo metadata proxy answers overload with 503 or 429 plus a
+		// Retry-After. That is admission backpressure, not an upstream failure,
+		// so wait as long as it asks, for as long as the caller's deadline
+		// allows, instead of giving up after maxRetries. Without a usable
+		// Retry-After the direct-mode handling below applies.
+		if proxyMode && (resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusTooManyRequests) {
+			if delay, ok := retryAfterDelay(resp.Header.Get("Retry-After"), time.Now()); ok {
+				_ = resp.Body.Close()
+				wait := delay + time.Duration(rand.Int64N(int64(proxyRetryJitter)))
+				if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= wait {
+					return fmt.Errorf("tvdb: metadata proxy HTTP %d and Retry-After %s would exceed caller deadline", resp.StatusCode, delay)
+				}
+				if backpressure+wait > c.proxyBackpressureBudget {
+					return fmt.Errorf("tvdb: metadata proxy HTTP %d still busy after waiting %s", resp.StatusCode, backpressure.Round(time.Second))
+				}
+				backpressure += wait
+				slog.Debug("tvdb: metadata proxy busy, waiting for Retry-After",
+					"path", path,
+					"status", resp.StatusCode,
+					"retry_after", delay.String(),
+					"wait", wait.String(),
+				)
+				select {
+				case <-time.After(wait):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				attempt-- // backpressure waits do not use up maxRetries
+				continue
+			}
 		}
 
 		// 429 Too Many Requests.
@@ -297,6 +420,24 @@ func retryAfterOrDefault(resp *http.Response, attempt int) time.Duration {
 		}
 	}
 	return time.Duration(1<<attempt) * time.Second
+}
+
+// retryAfterDelay parses a Retry-After value given either in seconds or as an
+// HTTP-date. It reports false when the value is absent, malformed, or does not
+// ask for a positive wait. Waits are capped at maxProxyRetryAfter.
+func retryAfterDelay(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	var delay time.Duration
+	if secs, err := strconv.ParseInt(value, 10, 64); err == nil {
+		// Clamp before converting so a huge value cannot overflow Duration.
+		delay = time.Duration(min(secs, int64(maxProxyRetryAfter/time.Second))) * time.Second
+	} else if at, err := http.ParseTime(value); err == nil {
+		delay = at.Sub(now)
+	}
+	if delay <= 0 {
+		return 0, false
+	}
+	return min(delay, maxProxyRetryAfter), true
 }
 
 // ---------------------------------------------------------------------------

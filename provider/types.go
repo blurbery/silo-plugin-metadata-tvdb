@@ -290,6 +290,8 @@ type ArtworkRecord struct {
 	Width        int    `json:"width"`
 	Height       int    `json:"height"`
 	IncludesText *bool  `json:"includesText"`
+	// SeasonID is set on season artwork in a series' extended record.
+	SeasonID int `json:"seasonId"`
 }
 
 // ContentRating is a content/age rating for a given country.

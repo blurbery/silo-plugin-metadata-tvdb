@@ -1,6 +1,6 @@
 {
   "plugin_id": "silo.tvdb",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "checksum": "__CHECKSUM__",
   "silo_api_version": "v1",
   "presentation": {
@@ -57,5 +57,41 @@
       }
     }
   ],
-  "global_config_schema": []
+  "global_config_schema": [
+    {
+      "key": "metadata_proxy",
+      "title": "Silo Metadata Proxy",
+      "description": "Route TVDB requests through the shared Silo metadata proxy instead of calling TVDB directly. The proxy caches responses for every Silo installation, so scans hit TVDB far less often. Turn it off to call TVDB directly.",
+      "json_schema": "{\"type\":\"object\",\"properties\":{\"enabled\":{\"type\":\"boolean\"},\"url\":{\"type\":\"string\"}},\"additionalProperties\":false}",
+      "required": false,
+      "admin_form": {
+        "submit_label": "Save proxy settings",
+        "fields": [
+          {
+            "key": "enabled",
+            "label": "Use Silo metadata proxy",
+            "description": "When on, this plugin sends TVDB requests to the proxy URL below instead of api4.thetvdb.com.",
+            "control": "ADMIN_FORM_CONTROL_SWITCH",
+            "default_value": false
+          },
+          {
+            "key": "url",
+            "label": "Proxy URL",
+            "description": "Base URL of the metadata proxy. The official proxy is https://metadata.siloserver.org.",
+            "control": "ADMIN_FORM_CONTROL_TEXT",
+            "placeholder": "https://metadata.siloserver.org",
+            "default_value": "https://metadata.siloserver.org",
+            "show_when": [
+              {
+                "field": "enabled",
+                "equals": [
+                  "true"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }
